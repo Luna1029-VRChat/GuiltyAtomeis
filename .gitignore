@@ -1,0 +1,36 @@
+# Nim
+nimcache/
+nimblecache/
+*.exe
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+
+# Build outputs
+atmc
+atmc.exe
+atomeis
+atomeis.exe
+atomeis_runtime
+atomeis_runtime.exe
+atomeis_stub
+atomeis_stub.exe
+pack_dist
+pack_dist.exe
+
+# Auto-generated
+atmc_payload.nim
+src/atmc_payload.nim
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
