@@ -36,7 +36,7 @@ type
         nkGetArg, nkOpen, nkRead, nkClose, nkWrite,
         nkStigma, nkFate,
         nkXor, nkShl, nkShr,
-        nkCopyAll, nkCheck, nkEncrypt, nkWriteBlock, nkEvolve,
+        nkCopyAll, nkEncrypt, nkWriteBlock, nkEvolve,
         nkHistoryHash, nkInitEngine, nkCompile, nkListAppend,
         nkOrbit,
         # V11
@@ -63,7 +63,7 @@ type
         of nkFate:
             fateVal*: Node
             fateBody*: Node
-        of nkPrint, nkExit, nkMapNew, nkRawExec, nkGetArg, nkOpen, nkRead, nkClose, nkEncrypt, nkEvolve, nkHistoryHash, nkInitEngine, nkCompile, nkCheck:
+        of nkPrint, nkExit, nkMapNew, nkRawExec, nkGetArg, nkOpen, nkRead, nkClose, nkEncrypt, nkEvolve, nkHistoryHash, nkInitEngine, nkCompile:
             valNode*: Node
         of nkWrite, nkWriteBlock:
             writeFid*: Node

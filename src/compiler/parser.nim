@@ -76,12 +76,6 @@ proc parseFactor(p: var Parser): Node =
             if p.peek.kind != tkRPar: raise newException(ValueError, "Expected ')' after copy_all args")
             p.next()
             return Node(kind: nkCopyAll, copySrc: src, copyDst: dst)
-        elif t.name == "check":
-            if p.peek.kind != tkLPar: raise newException(ValueError, "Expected '(' after check")
-            p.next()
-            if p.peek.kind != tkRPar: raise newException(ValueError, "Expected ')'")
-            p.next()
-            return Node(kind: nkCheck, valNode: nil)
         elif t.name == "encrypt":
             if p.peek.kind != tkLPar: raise newException(ValueError, "Expected '(' after encrypt")
             p.next()

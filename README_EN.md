@@ -1,6 +1,7 @@
-# GuiltyAtomeis V10 — Atomeis SOUL
+# GuiltyAtomeis V10 — Open Source Edition
 
-**GuiltyAtomeis** is an experimental security-oriented programming language system that compiles to encrypted bytecode running on a stack-based 4D maze virtual machine.
+**GuiltyAtomeis (OSS Edition)** is an experimental programming language system that compiles to encrypted bytecode running on a stack-based 4D maze virtual machine.  
+It features a lightweight security model focused on obfuscation. A full-security (Closed Source) edition is available separately.
 
 ## Features
 
@@ -9,15 +10,13 @@
 - **AutonomousMalbolge Encryption** — All runtime values stored as FHE-like encrypted blocks
 - **Thue-Morse ISA Shuffling** — Dynamic opcode permutation table updated every step
 - **ORAM** — Oblivious RAM hiding all memory access patterns
-- **Integrity Self-Defense** — Multi-layer hash verification, tamper detection, COME FROM response mechanism
-- **Anti-Debugging** — TracerPid check, timing analysis, LD_PRELOAD detection
 
 ## Components
 
 | Component | Description |
 |---|---|
-| `atmc` | Compiler. Compiles `.atx` source into encrypted self-extracting executables |
-| `atomeis_runtime` | Runtime stub embedded in every compiled binary. Handles startup integrity verification and VM execution |
+| `atmc` | Compiler. Compiles `.atx` source into obfuscated self-extracting executables |
+| `atomeis_runtime` | Runtime stub embedded in every compiled binary. Handles VM execution |
 
 ## Building
 

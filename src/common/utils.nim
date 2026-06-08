@@ -20,10 +20,4 @@ proc deobfuscateString*(s: string, seed: int64): string =
     result[i] = chr(decrypted)
     k = (k * 0x9e3779b9'u64) xor uint64(decrypted) xor (k shr 13)
 
-# 2. .text セクションハッシュ計算
-proc computeTextHash*(data: openArray[byte], seed: uint64 = 0x9E3779B97F4A7C15'u64): uint32 =
-  var h = seed
-  for b in data:
-    h = h xor uint64(b)
-    h = h * 0x9e3779b97f4a7c15'u64
-  return cast[uint32]((h xor (h shr 32)) and 0xFFFFFFFF'u64)
+

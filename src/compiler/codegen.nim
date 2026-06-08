@@ -302,8 +302,6 @@ proc gen(node: Node) =
     of nkCompile:
         gen(node.valNode)
         bytecode.add(opCompile.uint8)
-    of nkCheck:
-        bytecode.add(opCheck.uint8)
     of nkCopyAll:
         gen(node.copySrc)
         gen(node.copyDst)

@@ -1,4 +1,4 @@
-import os, strutils, parseopt, times, streams, tables
+import os, strutils, parseopt, times, streams
 import common/[isa, constants, utils]
 import compiler/[entropy_engine, lexer, parser, codegen, thue_shuffler]
 import runtime/vm
@@ -48,14 +48,12 @@ proc transpileWithAtb(srcFile, atbModule: string): (seq[uint8], seq[string]) =
   
   # 4. 実行
   try:
-    var dummyMaps: seq[Table[uint8, string]] = @[]
-    
     # Heap allocation to avoid stack overflow
     var runtimeEnginePtr = create(AutonomousMalbolge)
     runtimeEnginePtr[] = constructAuto()
     
     echo "[Debug] Starting VM Run..."
-    vm.run(code, runtimeEnginePtr[], 0'i64, 0'u32, 0, dummyMaps, 1024, @[], @[srcFile])
+    vm.run(code, runtimeEnginePtr[], 0'i64, 1024, @[], @[srcFile])
     echo "[Debug] VM Finished at PC: ", vm.pc
     
     # Clean up
@@ -105,69 +103,6 @@ proc compileSrc(opts: CompileOptions): tuple[bytecode: seq[uint8], pool: seq[str
   let ast = p.parseProgram()
   return generateProgram(ast)
 
-proc getTextSection(data: string): tuple[offset: int64, size: int64] =
-  if data.len < 64: return
-  # ELF64
-  if data[0] == '\x7F' and data[1] == 'E' and data[2] == 'L' and data[3] == 'F' and data[4] == '\x02':
-    var shoff: uint64
-    var shentsize: uint16
-    var shnum: uint16
-    var shstrndx: uint16
-    copyMem(shoff.addr, data[0x28].unsafeAddr, sizeof(shoff))
-    copyMem(shentsize.addr, data[0x3A].unsafeAddr, sizeof(shentsize))
-    copyMem(shnum.addr, data[0x3C].unsafeAddr, sizeof(shnum))
-    copyMem(shstrndx.addr, data[0x3E].unsafeAddr, sizeof(shstrndx))
-    if shoff == 0 or shentsize < 60'u16 or shnum == 0: return
-    let strtabHdrOff = shoff + shstrndx.uint64 * shentsize.uint64
-    var strtabShOffset: uint64
-    var strtabShSize: uint64
-    if strtabHdrOff + 0x28'u64 >= data.len.uint64: return
-    copyMem(strtabShOffset.addr, data[strtabHdrOff + 0x18].unsafeAddr, sizeof(strtabShOffset))
-    copyMem(strtabShSize.addr, data[strtabHdrOff + 0x20].unsafeAddr, sizeof(strtabShSize))
-    for i in 0 ..< int(shnum):
-      let shdrOff = shoff + i.uint64 * shentsize.uint64
-      if shdrOff + 0x28'u64 >= data.len.uint64: continue
-      var shNameIdx: uint32
-      var shType: uint32
-      var shFlags: uint64
-      var shOffset: uint64
-      var shSize: uint64
-      copyMem(shNameIdx.addr, data[shdrOff].unsafeAddr, sizeof(shNameIdx))
-      copyMem(shType.addr, data[shdrOff + 4].unsafeAddr, sizeof(shType))
-      copyMem(shFlags.addr, data[shdrOff + 8].unsafeAddr, sizeof(shFlags))
-      copyMem(shOffset.addr, data[shdrOff + 0x18].unsafeAddr, sizeof(shOffset))
-      copyMem(shSize.addr, data[shdrOff + 0x20].unsafeAddr, sizeof(shSize))
-      if shNameIdx < strtabShSize:
-        var pos = strtabShOffset + shNameIdx.uint64
-        if pos + 5 < data.len.uint64:
-          if data[pos] == '.' and data[pos+1] == 't' and data[pos+2] == 'e' and data[pos+3] == 'x' and data[pos+4] == 't':
-            return (cast[int64](shOffset), cast[int64](shSize))
-    return
-  # PE32+ (Windows)
-  if data[0] == 'M' and data[1] == 'Z':
-    var e_lfanew: int32
-    copyMem(e_lfanew.addr, data[0x3C].unsafeAddr, sizeof(e_lfanew))
-    if e_lfanew < 0 or e_lfanew + 4 + 20 >= data.len: return
-    if data[e_lfanew] != 'P' or data[e_lfanew+1] != 'E': return
-    let fileHdr = e_lfanew + 4
-    var machine: uint16
-    var numSections: uint16
-    var optHdrSize: uint16
-    copyMem(machine.addr, data[fileHdr].unsafeAddr, sizeof(machine))
-    copyMem(numSections.addr, data[fileHdr + 2].unsafeAddr, sizeof(numSections))
-    copyMem(optHdrSize.addr, data[fileHdr + 16].unsafeAddr, sizeof(optHdrSize))
-    if machine notin {0x8664'u16, 0x14C'u16}: return
-    let sectHdr = fileHdr + 20 + optHdrSize.int
-    for i in 0 ..< numSections.int:
-      let shdr = sectHdr + i * 40
-      if shdr + 36 >= data.len: continue
-      if data[shdr] == '.' and data[shdr+1] == 't' and data[shdr+2] == 'e' and data[shdr+3] == 'x' and data[shdr+4] == 't':
-        var rawSize: uint32
-        var rawOffset: uint32
-        copyMem(rawSize.addr, data[shdr + 16].unsafeAddr, sizeof(rawSize))
-        copyMem(rawOffset.addr, data[shdr + 20].unsafeAddr, sizeof(rawOffset))
-        return (cast[int64](rawOffset), cast[int64](rawSize))
-
 # EXE合成
 proc synthesizeExe(opts: CompileOptions, bytecode: seq[uint8],
                    pool: seq[string], withSecurity: bool) =
@@ -183,14 +118,6 @@ proc synthesizeExe(opts: CompileOptions, bytecode: seq[uint8],
 
   let seed: int64 = cast[int64](getTime().toUnix())
   let effectiveSeed: int64 = if withSecurity: seed else: 0
-
-  # .text section hash
-  let (textOffset, textSize) = getTextSection(stubData)
-  let textHash = if textSize > 0:
-    var textData = newSeq[byte](textSize)
-    copyMem(addr textData[0], unsafeAddr stubData[textOffset], textSize)
-    computeTextHash(textData)
-  else: 0'u32
 
   var fs = newFileStream(opts.outFile, fmWrite)
   fs.write(stubData)
@@ -232,7 +159,6 @@ proc synthesizeExe(opts: CompileOptions, bytecode: seq[uint8],
     let thueSeed = ThueSeed(uint64(effectiveSeed)) + 0x9E3779B9'u64
     thueEngine = initThueShuffler(thueSeed)
 
-  var writtenBlocks: seq[FheBlock] = @[]
   for i in 0 ..< bytecode.len:
     let byteVal = if withSecurity:
       let shuffled = thueEngine.encodeOp(bytecode[i])
@@ -242,12 +168,9 @@ proc synthesizeExe(opts: CompileOptions, bytecode: seq[uint8],
       bytecode[i]
     if withSecurity:
       let enc = buildEngine.stableEncrypt(byteVal.int32, i)
-      writtenBlocks.add(enc)
       fs.write(enc.low)
       fs.write(enc.high)
     else:
-      let blk = FheBlock(low: byteVal.uint64, high: 0)
-      writtenBlocks.add(blk)
       fs.write(byteVal.uint64)
       fs.write(0'u64)  # high は 0
   let dataSize = fs.getPosition() - dataStart
@@ -255,13 +178,12 @@ proc synthesizeExe(opts: CompileOptions, bytecode: seq[uint8],
   # Security flag
   let secFlag: uint32 = if withSecurity: 0xDEADBEEF'u32 else: 0x00000000'u32
   
-  # No license/expiry - all set to 0
+  # Footer
   let licLen: int64 = 0
   let expUnix: int64 = 0
 
-  # Structural Footer (Extended: 108 bytes before VERSION_TAG)
   fs.write(licLen)                       # 8 bytes
-  fs.write(expUnix)                      # 8 bytes (reserved)
+  fs.write(expUnix)                      # 8 bytes
   fs.write(secFlag)                      # 4 bytes
   fs.write(effectiveSeed)                # 8 bytes
   fs.write(dataSize.int64)               # 8 bytes
@@ -269,31 +191,6 @@ proc synthesizeExe(opts: CompileOptions, bytecode: seq[uint8],
   fs.write(pitSize.int64)                # 8 bytes
   fs.write(poolSize.int64)               # 8 bytes
   fs.write(bytecode.len.int32)           # 4 bytes
-  # 全ペイロードデータの完全性ハッシュ（コード+PIT+マップ+プール）
-  # 注意: ハッシュに使うプールは元の文字列（非難読化）で、runtimeのstringPoolと同じ内容
-  var pitList: seq[int32] = @[]
-  for i in 0 .. numPackets: pitList.add(int32(i * 16))
-  var emptyMaps: seq[Table[uint8, string]] = @[]
-  for _ in 1 .. numPackets: emptyMaps.add(initTable[uint8, string]())
-  let hashVal = computeIntegrityHash(writtenBlocks, uint64(effectiveSeed), emptyMaps, pitList, pool)
-  let hashVal2 = computeIntegrityHash(writtenBlocks, uint64(effectiveSeed) xor 0xDEADC0DE'u64, emptyMaps, pitList, pool)
-  fs.write(hashVal)                      # 4 bytes (hash)
-  fs.write(hashVal2)                     # 4 bytes (dual hash)
-  # .text section metadata (XOR-encoded hash)
-  let textHashEnc = textHash xor 0x7D7D7D7D'u32
-  fs.write(textOffset)                   # 8 bytes
-  fs.write(textSize)                     # 8 bytes
-  fs.write(textHashEnc)                  # 4 bytes (XOR-encoded)
-  # Dynamic Layer 4 expected hash (depends on .text hash)
-  let layer4Seed = uint64(textHash) xor 0x12345678'u64
-  let layer4Expected = computeIntegrityHash(
-    @[FheBlock(low: 0x1111111111111111'u64, high: 0x2222222222222222'u64)],
-    layer4Seed, @[],
-    @[int32(0), int32(1)],
-    @["v"]
-  )
-  let layer4ExpectedEnc = layer4Expected xor 0x5A5A5A5A'u32
-  fs.write(layer4ExpectedEnc)            # 4 bytes (XOR-encoded, dynamic)
   fs.write(VERSION_TAG)                  # 8 bytes
   fs.write(0x87654321'u32)              # 4 bytes
   fs.close()

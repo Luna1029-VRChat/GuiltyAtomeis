@@ -35,7 +35,6 @@ type
         opCopyAll = 0x54.uint8
         opExit = 0xFF.uint8
         opNoise = 0xEE.uint8
-        opCheck = 0xFB.uint8
         opEncrypt = 0x60.uint8
         opWriteBlock = 0x61.uint8
         opEvolve = 0x62.uint8

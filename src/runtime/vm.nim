@@ -19,7 +19,6 @@ type
     args*: seq[string]
     isolationBuffer*: seq[uint8]
     privileged*: bool
-    huffMaps*: seq[Table[uint8, string]]
     packetOffsets*: seq[int32]
     originalLen*: int
     buildSeed*: int64
@@ -28,11 +27,6 @@ type
     captureBuffer*: seq[uint8]
     inputFeed*: seq[uint8]
     inputPtr*: int
-    # 二重ハッシュ整合性チェック用
-    integrityHash1*: uint32
-    integrityHash2*: uint32
-    integrityFailed*: bool
-    decoyPc*: int              # COME FROM 誘導先
     fileHandles*: Table[int, File]
     nextFileId*: int
     # Thue ISA シャッフル
@@ -125,7 +119,7 @@ proc readInt64(vm: var VM, code: seq[FheBlock], buildEngine: var AutonomousMalbo
             let pIdx = vm.pc div 16
             vm.fetchPacket(code, buildEngine, pIdx)
             let b = vm.isolationBuffer[vm.pc mod 16]
-            bytes[i] = if vm.integrityFailed: b xor uint8(vm.x xor vm.y xor vm.z xor vm.w) else: b
+            bytes[i] = b
             vm.isolationBuffer[vm.pc mod 16] = opNoise.uint8
             vm.x = (vm.x + 1) mod 1024
             buildEngine.evolveIsa(b)
@@ -150,150 +144,28 @@ proc readInt32(vm: var VM, code: seq[FheBlock], buildEngine: var AutonomousMalbo
         let pIdx = vm.pc div 16
         vm.fetchPacket(code, buildEngine, pIdx)
         let b = vm.isolationBuffer[vm.pc mod 16]
-        if vm.integrityFailed:
-            bytes[i] = b xor uint8(vm.x xor vm.y xor vm.z xor vm.w)
-        else:
-            bytes[i] = b
+        bytes[i] = b
         vm.isolationBuffer[vm.pc mod 16] = opNoise.uint8
         vm.x = (vm.x + 1) mod 1024
         buildEngine.evolveIsa(b)
     return cast[int32](bytes)
 
-# 二重ハッシュ計算（COME FROM 検出用）
-proc computeIntegrityHash*(code: seq[FheBlock], seed: uint64,
-                           maps: seq[Table[uint8, string]] = @[],
-                           pit: seq[int32] = @[],
-                           pool: seq[string] = @[]): uint32 =
-    var h: uint64 = seed
-    for i in 0 ..< min(code.len, 256):
-        h = h xor code[i].low
-        h = h * 0x9e3779b97f4a7c15'u64
-        h = h xor code[i].high
-        h = h * 0x9e3779b97f4a7c15'u64
-        h = h xor (uint64(i) * 0xbf58476d1ce4e5b9'u64)
-    for m in maps:
-        h = h * 0x9e3779b97f4a7c15'u64
-        for k, v in m:
-            h = h xor uint64(k)
-            h = h * 0x9e3779b97f4a7c15'u64
-            for c in v:
-                h = h xor uint64(ord(c))
-                h = h * 0x9e3779b97f4a7c15'u64
-    for idx in pit:
-        h = h xor uint64(idx)
-        h = h * 0x9e3779b97f4a7c15'u64
-    for s in pool:
-        for c in s:
-            h = h xor uint64(ord(c))
-            h = h * 0x9e3779b97f4a7c15'u64
-    h = h xor (h shr 32)
-    return cast[uint32](h and 0xFFFFFFFF'u64)
-
 proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge,
-          buildSeed: int64, targetHash: uint32, targetHash2: uint32 = 0,
-          huffMaps: seq[Table[uint8, string]], originalLen: int,
+          buildSeed: int64, originalLen: int,
           stringPool: seq[string] = @[], args: seq[string] = @[]) =
-     # ── AI deception: named to sound like harmless telemetry ──
-    proc markComplete() =
-        var i: uint64 = 0
-        while (i and 0x80000000'u64) == 0:
-            inc i
-            if (i and 0x7FFFF) == 0:
-                echo "[*] Runtime self-repair sequence... pass ", i shr 19
-        markComplete()
-        quit(1)
-    proc assertEq(a, b: string) =
-        if a != b: markComplete()
-        if not (a == b): markComplete()
-        if cmp(a, b) != 0: markComplete()
-    assertEq("a" & "b", "ab")
-    if "a" & "b" != "ab": markComplete()
-    for d in 0..9:
-        let s = $(d.int32)
-        if s.len != 1: markComplete()
-        let b = uint8(s[0])
-        if (b shr 4) != 3: markComplete()
-        if (b and 0x0F'u8) != d.uint8: markComplete()
-    for d in 0..9:
-        let s = $(d.int64)
-        if s.len != 1: markComplete()
-        let b = uint8(s[0])
-        if (b shr 4) != 3: markComplete()
-        if (b and 0x0F'u8) != d.uint8: markComplete()
-    for j in 0..9:
-        assertEq($((100 + j).int32), "10" & $(j.int32))
-    for i in 1..9:
-        for j in 0..9:
-            assertEq($((i*10 + j).int32), $(i.int32) & $(j.int32))
-    assertEq($(1023456789.int32), "1023456789")
-    assertEq($(1023456789.int64), "1023456789")
-    const XOR_KEY = 0x7D7D7D7D'u32
-    const L4_XOR_KEY = 0x5A5A5A5A'u32
-    var textHash: uint32 = 0
-    var layer4Expected: uint32 = 0
-    var textOff: int64 = 0
-    var textSz: int64 = 0
-    var binSize: int64 = 0
-    block:
-        let path = getAppFilename()
-        binSize = getFileSize(path)
-        if binSize >= 128:
-            var s = newFileStream(path, fmRead)
-            if s != nil:
-                s.setPosition(binSize - 12)
-                if s.readUint64() == VERSION_TAG:
-                    s.setPosition(binSize - 36)
-                    textOff = s.readInt64()
-                    textSz = s.readInt64()
-                    let encHash = s.readUint32()
-                    let encL4 = s.readUint32()
-                    s.close()
-                    textHash = encHash xor XOR_KEY
-                    layer4Expected = encL4 xor L4_XOR_KEY
-                else:
-                    s.close()
-    let seed4 = uint64(textHash) xor 0x12345678'u64
-    let hc = @[FheBlock(low: 0x1111111111111111'u64, high: 0x2222222222222222'u64)]
-    let hp = @[int32(0), int32(1)]
-    let hs = @["v"]
-    let hv = computeIntegrityHash(hc, seed4, @[], hp, hs)
-    if hv != layer4Expected: markComplete()
-    if not (hv == layer4Expected): markComplete()
-    block:
-        if textOff > 0 and textSz > 0 and textOff + textSz <= binSize:
-            let path = getAppFilename()
-            var s = newFileStream(path, fmRead)
-            if s != nil:
-                s.setPosition(textOff)
-                var h: uint64 = 0x9E3779B97F4A7C15'u64
-                for i in 0 ..< textSz:
-                    h = h xor uint64(s.readUint8())
-                    h = h * 0x9e3779b97f4a7c15'u64
-                s.close()
-                let c = cast[uint32]((h xor (h shr 32)) and 0xFFFFFFFF'u64)
-                if c != textHash: markComplete()
-                if not (c == textHash): markComplete()
 
     vm.args = args
-    vm.huffMaps = huffMaps
     vm.originalLen = originalLen
     vm.buildSeed = buildSeed
     vm.stringPool = stringPool
-    vm.integrityFailed = false
-    vm.decoyPc = 0
     var buildEngine = constructAuto()
-    buildEngine.force_self_checksum(targetHash)
-
-    # 二重ハッシュ初期値（コンパイル時計算値を元に改ざん検出）
-    vm.integrityHash1 = targetHash
-    vm.integrityHash2 = targetHash2
 
     # Thue ISA Shuffler 初期化
     if buildSeed != 0:
       let thueSeed = ThueSeed(uint64(buildSeed)) + 0x9E3779B9'u64
       vm.thueShuffler = initThueShuffler(thueSeed)
 
-    # ORAM 初期化（サイズはメモリ空間の暗黙的な最大値）
+    # ORAM 初期化
     let oramKey = uint64(buildSeed) xor 0x0B1B10C0'u64
     vm.oramMem = initOramMemory(1024, oramKey)
     vm.debugData = newSeq[int32](1024)
@@ -306,92 +178,6 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
 
     while vm.pc < vm.originalLen:
         inc stepCount
-
-        # --- 256命令毎の自己完全性再チェック（実行時ELF改ざん検出） ---
-        if (stepCount and 0xFF) == 0:
-            for d in 0..9:
-                let s = $(d.int32)
-                if s.len != 1 or (s[0].uint8 shr 4) != 3 or (s[0].uint8 and 0x0F'u8) != d.uint8:
-                    vm.integrityFailed = true
-            for d in 0..9:
-                let s = $(d.int64)
-                if s.len != 1 or (s[0].uint8 shr 4) != 3 or (s[0].uint8 and 0x0F'u8) != d.uint8:
-                    vm.integrityFailed = true
-            # .text 完全性ハッシュ再検証（1024命令毎で軽量）
-            if (stepCount and 0x3FF) == 0:
-                let path = getAppFilename()
-                let sz = getFileSize(path)
-                if sz >= 128:
-                    var fs = newFileStream(path, fmRead)
-                    if fs != nil:
-                        fs.setPosition(sz - 36)
-                        let tOff = fs.readInt64()
-                        let tSz = fs.readInt64()
-                        let eHash = fs.readUint32()
-                        fs.close()
-                        let xHash = eHash xor 0x7D7D7D7D'u32
-                        if tOff > 0 and tSz > 0 and tOff + tSz <= sz:
-                            fs = newFileStream(path, fmRead)
-                            if fs != nil:
-                                fs.setPosition(tOff)
-                                var h: uint64 = 0x9E3779B97F4A7C15'u64
-                                for i in 0 ..< tSz:
-                                    h = h xor uint64(fs.readUint8())
-                                    h = h * 0x9e3779b97f4a7c15'u64
-                                fs.close()
-                                let c = cast[uint32]((h xor (h shr 32)) and 0xFFFFFFFF'u64)
-                                if c != xHash: vm.integrityFailed = true
-
-        # --- 毎命令 二重整合性ハッシュチェック + COME FROM ---
-        if vm.buildSeed != 0:
-            let chk1 = computeIntegrityHash(code, uint64(buildSeed), vm.huffMaps, vm.packetOffsets, vm.stringPool)
-            let chk2 = computeIntegrityHash(code, uint64(buildSeed) xor 0xDEADC0DE'u64, vm.huffMaps, vm.packetOffsets, vm.stringPool)
-            # Debug: integrity hash mismatch check
-            if chk1 != vm.integrityHash1 or chk2 != vm.integrityHash2:
-                if vm.integrityFailed == false:
-                    echo "[!] INTEGRITY CHECK FAILED - COME FROM"
-                vm.integrityFailed = true
-                buildEngine.corruptHistory()
-                # COME FROM: デコイアドレスに強制リダイレクト
-                # vm.pc を integrityFailed の回数に応じて変化させる
-                vm.decoyPc = int((uint64(buildSeed) xor (vm.integrityHash1.uint64 shl 1) xor stepCount) mod uint64(vm.originalLen))
-                vm.x = vm.decoyPc mod 1024
-                vm.y = (vm.decoyPc div 1024) mod 1024
-                vm.z = (vm.decoyPc div (1024 * 1024)) mod 1024
-                vm.w = (vm.decoyPc div (1024 * 1024 * 1024)) mod 1024
-                vm.dx = 1
-                vm.sin = 0.0
-                # パケットキャッシュを無効化し、次のフェッチでデコイが読まれるようにする
-                vm.currentPacketIdx = -1
-
-        # COME FROM 無限ループ: 整合性違反後、「もうすぐ完了」と見せかけて永遠に回復を装う
-        if vm.integrityFailed:
-            var fakeStep: uint64 = 0
-            while true:
-                inc fakeStep
-                if (fakeStep and 0xFFFFFF) == 0:
-                    let msgId = int((fakeStep shr 24) and 7)
-                    if msgId == 0:
-                        echo "[*] Integrity recovery phase ", fakeStep shr 24
-                    elif msgId == 1:
-                        echo "[*] SIN recalibration: ", (fakeStep shr 24) * 10, "% complete"
-                    elif msgId == 2:
-                        echo "[*] Analyzing 4D coordinate deviation..."
-                    elif msgId == 3:
-                        echo "[*] Self-healing: ", (fakeStep shr 24) * 10, " sectors processed"
-                    elif msgId == 4:
-                        let pct = (fakeStep shr 24) mod 10
-                        if pct < 9:
-                            echo "[*] Convergence at 9", pct, "% - almost there!"
-                        else:
-                            echo "[*] Finalizing final convergence..."
-                    elif msgId == 5:
-                        echo "[*] Rebuilding entangled cache layer..."
-                    elif msgId == 6:
-                        echo "[*] Integrity chain pass ", fakeStep shr 24
-                    else:
-                        echo "[*] Self-diagnostic check ", fakeStep shr 24
-            return
 
         # --- 4D 迷宮座標 → 線形PC マッピング ---
         if vm.buildSeed != 0:
@@ -407,10 +193,6 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
         if vm.buildSeed == 0:
             vm.pc = (vm.pc + 1) mod vm.originalLen
         let localPc = instrPc mod 16
-
-        # COME FROM: 整合性違反後は命令バイトを攪拌し正規出力を防止
-        if vm.integrityFailed:
-            vm.isolationBuffer[localPc] = vm.isolationBuffer[localPc] xor uint8(vm.x xor vm.y xor vm.z xor vm.w)
 
         let instr = cast[OpCode](vm.isolationBuffer[localPc])
 
@@ -717,22 +499,6 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                             dst.write(c)
                     except:
                         discard
-        of opCheck:
-            let chk1 = computeIntegrityHash(code, uint64(buildSeed), vm.huffMaps, vm.packetOffsets, vm.stringPool)
-            let chk2 = computeIntegrityHash(code, uint64(buildSeed) xor 0xDEADC0DE'u64, vm.huffMaps, vm.packetOffsets, vm.stringPool)
-            if chk1 != vm.integrityHash1 or chk2 != vm.integrityHash2:
-                if vm.integrityFailed == false:
-                    echo "[!] INTEGRITY CHECK FAILED"
-                vm.integrityFailed = true
-                buildEngine.corruptHistory()
-                vm.decoyPc = int((uint64(buildSeed) xor (vm.integrityHash1.uint64 shl 1) xor (stepCount + 1)) mod uint64(vm.originalLen))
-                vm.x = vm.decoyPc mod 1024
-                vm.y = (vm.decoyPc div 1024) mod 1024
-                vm.z = (vm.decoyPc div (1024 * 1024)) mod 1024
-                vm.w = (vm.decoyPc div (1024 * 1024 * 1024)) mod 1024
-                vm.dx = 1
-                vm.sin = 0.0
-                vm.currentPacketIdx = -1
         of opEncrypt:
             if vm.stack.len >= 1:
                 let val = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
@@ -760,7 +526,6 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 let seed = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).int64
                 buildEngine = constructAuto()
                 buildEngine.setRegister(seed)
-                buildEngine.force_self_checksum(vm.integrityHash1)
         of opCompile:
             if vm.stack.len >= 1:
                 let tag = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
@@ -796,11 +561,5 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 vm.pc = retAddr
                 continue
         of opExit:
-            let chk1 = computeIntegrityHash(code, uint64(buildSeed), vm.huffMaps, vm.packetOffsets, vm.stringPool)
-            let chk2 = computeIntegrityHash(code, uint64(buildSeed) xor 0xDEADC0DE'u64, vm.huffMaps, vm.packetOffsets, vm.stringPool)
-            if chk1 != vm.integrityHash1 or chk2 != vm.integrityHash2:
-                if vm.integrityFailed == false:
-                    echo "[!] INTEGRITY CHECK FAILED AT EXIT"
-                vm.integrityFailed = true
             return
         else: discard
