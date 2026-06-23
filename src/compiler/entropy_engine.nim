@@ -3,7 +3,7 @@ import os
 import ../common/isa
 {.passC: "-mrdrnd".}
 
-const headerPath = currentSourcePath().parentDir() / "entropy_engine.hpp"
+const headerPath = "compiler/entropy_engine.hpp"
 type AutonomousMalbolge* {.importcpp: "AutonomousMalbolge", header: headerPath.} = object
 
 proc constructAuto*(): AutonomousMalbolge {.importcpp: "AutonomousMalbolge()", header: headerPath.}
@@ -14,6 +14,7 @@ proc force_self_checksum*(this: var AutonomousMalbolge, cs: uint32) {.importcpp:
 proc getSelfChecksum*(this: var AutonomousMalbolge): uint64 {.importcpp: "#.get_self_checksum()", header: headerPath.}
 proc armorId*(this: var AutonomousMalbolge): uint64 {.importcpp: "#.armor_id()", header: headerPath.}
 proc opaqueVerify*(this: var AutonomousMalbolge): bool {.importcpp: "#.opaque_verify()", header: headerPath.}
+proc decoy_loop*(this: var AutonomousMalbolge) {.importcpp: "#.decoy_loop()", header: headerPath.}
 proc evolveIsa*(this: var AutonomousMalbolge, op: uint8) {.importcpp: "#.evolve_isa(@)", header: headerPath.}
 proc getDynamicOffset*(this: AutonomousMalbolge, pc: uint64): uint32 {.importcpp: "#.get_dynamic_offset(@)", header: headerPath.}
 proc generateTrueSpice*(this: var AutonomousMalbolge): uint64 {.importcpp: "#.generate_true_spice()", header: headerPath.}

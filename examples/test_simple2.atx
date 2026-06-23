@@ -1,0 +1,4 @@
+struct Vec2:
+    x: float
+    y: float
+reveal 1

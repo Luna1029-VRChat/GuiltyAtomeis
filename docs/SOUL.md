@@ -2,10 +2,10 @@
 
 ## 0. 開発ワークフロー
 
-全開発作業は `/tmp` 配下で行い、作業完了後に `/media/veracrypt1/GuiltyAtomeisMotherShip` に同期すること。
+全開発作業は `/tmp` 配下で行い、作業完了後に `/media/veracrypt1/GuiltyAtomeis` に同期すること。
 
 ```
-cp -a /tmp/opencode/<作業ディレクトリ>/* /media/veracrypt1/GuiltyAtomeisMotherShip/
+cp -a /tmp/opencode/<作業ディレクトリ>/* /media/veracrypt1/GuiltyAtomeis/
 ```
 
 理由: ストレージの耐久性を考慮し、一時領域で作業してから最終格納先に反映する。

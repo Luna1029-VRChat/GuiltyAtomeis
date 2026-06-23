@@ -1,0 +1,27 @@
+struct Vec2:
+    x: float
+    y: float
+
+fn vec2_new(xv: float, yv: float) -> ptr Vec2:
+    let v = alloc(Vec2)
+    v.x = xv
+    v.y = yv
+    return v
+
+fn vec2_add(a: ptr Vec2, b: ptr Vec2) -> ptr Vec2:
+    let r = alloc(Vec2)
+    r.x = a.x + b.x
+    r.y = a.y + b.y
+    return r
+
+fn main():
+    let a = vec2_new(1.0, 2.0)
+    let b = vec2_new(3.0, 4.0)
+    let c = vec2_add(a, b)
+    reveal "c.x = "
+    reveal c.x
+    reveal ", c.y = "
+    reveal c.y
+    reveal "\n"
+
+main()

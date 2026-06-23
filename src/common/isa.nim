@@ -1,4 +1,3 @@
-# src/common/isa.nim
 import tables
 
 type
@@ -13,48 +12,15 @@ type
         opOr = 0x08.uint8
         opShl = 0x09.uint8
         opShr = 0x0A.uint8
+        opNeg = 0x0B.uint8
+        opNot = 0x0C.uint8
+        opInc = 0x0D.uint8
+        opDec = 0x0E.uint8
+        opMod = 0x0F.uint8
         opStore = 0x10.uint8
         opLoad = 0x11.uint8
         opDup = 0x12.uint8
         opPop = 0x13.uint8
-        opPrint = 0x20.uint8
-        opEq = 0x30.uint8
-        opNe = 0x31.uint8
-        opLt = 0x32.uint8
-        opGt = 0x33.uint8
-        opLe = 0x34.uint8
-        opGe = 0x35.uint8
-        opJmp = 0x40.uint8
-        opJz = 0x41.uint8
-        opCall = 0x42.uint8
-        opRet = 0x43.uint8
-        opOpen = 0x50.uint8
-        opClose = 0x51.uint8
-        opRead = 0x52.uint8
-        opWrite = 0x53.uint8
-        opCopyAll = 0x54.uint8
-        opExit = 0xFF.uint8
-        opNoise = 0xEE.uint8
-        opEncrypt = 0x60.uint8
-        opWriteBlock = 0x61.uint8
-        opEvolve = 0x62.uint8
-        opHistoryHash = 0x63.uint8
-        opInitEngine = 0x64.uint8
-        opGetArg = 0x65.uint8
-        opCompile = 0x66.uint8
-        # V9: Integration ISA
-        opMapNew = 0x70.uint8
-        opMapSet = 0x71.uint8
-        opMapGet = 0x72.uint8
-        opListAppend = 0x73.uint8
-        opPushStr = 0x90.uint8
-        opInput = 0x91.uint8
-        # V10: Asset Assimilation & Space Isolation
-        opLoadAtb = 0xA0.uint8
-        opSwitchParser = 0xA1.uint8
-        opRawExec = 0xA2.uint8
-        opAbsolution = 0xB0.uint8
-        # V11: Float / Int64 / List Index
         opPushFlt = 0x14.uint8
         opPush64  = 0x15.uint8
         opFAdd = 0x16.uint8
@@ -67,12 +33,66 @@ type
         opDiv64 = 0x1D.uint8
         opListGet = 0x1E.uint8
         opStrCat = 0x1F.uint8
+        opPrint = 0x20.uint8
+        opStrEq = 0x21.uint8
+        opStrLen = 0x22.uint8
+        opStrGet = 0x23.uint8
+        opPushBool = 0x24.uint8
+        opEq = 0x30.uint8
+        opNe = 0x31.uint8
+        opLt = 0x32.uint8
+        opGt = 0x33.uint8
+        opLe = 0x34.uint8
+        opGe = 0x35.uint8
+        opSizeof = 0x36.uint8
+        opCast = 0x37.uint8
+        opJmp = 0x40.uint8
+        opJz = 0x41.uint8
+        opCall = 0x42.uint8
+        opRet = 0x43.uint8
+        opBreak = 0x44.uint8
+        opContinue = 0x45.uint8
+        opReturn = 0x46.uint8
+        opOpen = 0x50.uint8
+        opClose = 0x51.uint8
+        opRead = 0x52.uint8
+        opWrite = 0x53.uint8
+        opCopyAll = 0x54.uint8
+        opFFICall = 0x55.uint8
+        opEncrypt = 0x60.uint8
+        opWriteBlock = 0x61.uint8
+        opEvolve = 0x62.uint8
+        opHistoryHash = 0x63.uint8
+        opInitEngine = 0x64.uint8
+        opGetArg = 0x65.uint8
+        opCompile = 0x66.uint8
+        opStructNew = 0x67.uint8
+        opStructGet = 0x68.uint8
+        opStructSet = 0x69.uint8
+        opMapNew = 0x70.uint8
+        opMapSet = 0x71.uint8
+        opMapGet = 0x72.uint8
+        opListAppend = 0x73.uint8
+        opArrayNew = 0x74.uint8
+        opArraySet = 0x75.uint8
+        opArrayGet = 0x76.uint8
+        opArrayLen = 0x77.uint8
+        opAlloc = 0x80.uint8
+        opFree = 0x81.uint8
+        opPtrRead = 0x82.uint8
+        opPtrWrite = 0x83.uint8
+        opAddr = 0x84.uint8
+        opPushStr = 0x90.uint8
+        opInput = 0x91.uint8
+        opLoadAtb = 0xA0.uint8
+        opSwitchParser = 0xA1.uint8
+        opRawExec = 0xA2.uint8
+        opAbsolution = 0xB0.uint8
+        opExit = 0xFF.uint8
+        opNoise = 0xEE.uint8
 
     FheBlock* = object
         low*: uint64
         high*: uint64
 
-    # 動的ISAマップ : ビルド時にシャッフルされる対応表
     ISAMap* = Table[uint8, OpCode]
-
-const CREATOR_PUB_KEY* = "ATOMEIS_CREATOR_V8_9999" # Placeholder for actual public key

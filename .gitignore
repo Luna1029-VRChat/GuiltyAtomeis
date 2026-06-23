@@ -11,8 +11,6 @@ nimblecache/
 # Build outputs
 atmc
 atmc.exe
-atomeis
-atomeis.exe
 atomeis_runtime
 atomeis_runtime.exe
 atomeis_stub
@@ -20,9 +18,8 @@ atomeis_stub.exe
 pack_dist
 pack_dist.exe
 
-# Auto-generated
+# Auto-generated payload
 atmc_payload.nim
-src/atmc_payload.nim
 
 # OS
 .DS_Store

@@ -1,0 +1,94 @@
+# GuiltyGodot Engine Demo - showing V11 language features
+
+# Struct definition
+struct Vector3:
+    x: float
+    y: float
+    z: float
+
+# Function definition with type annotations
+fn create_vector(x: float, y: float, z: float): Vector3:
+    let result = alloc(sizeof(Vector3))
+    result.x = x
+    result.y = y
+    result.z = z
+    return result
+
+# FFI declaration for engine functions
+extern fn godot_print(string)
+extern fn godot_get_ticks(): int
+
+# Module system
+module math:
+    fn add(a: float, b: float): float:
+        return a + b
+
+    fn sub(a: float, b: float): float:
+        return a - b
+
+# Boolean and if/elif/else
+fn check_value(v: int):
+    if v > 100:
+        reveal("Large")
+    elif v > 50:
+        reveal("Medium")
+    else:
+        reveal("Small")
+
+# While loop with break
+fn countdown(n: int):
+    var x = n
+    while x > 0:
+        reveal(x)
+        x = x - 1
+        if x == 3:
+            break
+
+# For loop
+fn sum_to(n: int): int:
+    var total = 0
+    for i in n:
+        total = total + i
+    return total
+
+# String operations
+fn greet(name: string): string:
+    return "Hello, " + name + "!"
+
+# Array operations
+fn make_array():
+    var arr = alloc(4 * 5)  # 5 elements
+    arr[0] = 10
+    arr[1] = 20
+    arr[2] = 30
+    reveal(arr[0] + arr[1] + arr[2])
+
+# Pointer operations
+fn swap(a: ptr int, b: ptr int):
+    var tmp = a[0]
+    a[0] = b[0]
+    b[0] = tmp
+
+# Enum
+enum Color:
+    Red
+    Green = 5
+    Blue
+
+# Main program
+reveal("GuiltyGodot Engine V11 Initializing...")
+
+let v = create_vector(1.0, 2.0, 3.0)
+reveal(v.x)
+reveal(v.y)
+reveal(v.z)
+
+check_value(75)
+
+reveal(sum_to(10))
+reveal(greet("World"))
+
+make_array()
+
+reveal("Engine initialized successfully")
+exit(0)

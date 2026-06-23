@@ -1,11 +1,11 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.2.0"
 author        = "宵猫ルナ"
-description   = "GuiltyAtomeis Mother Ship"
+description   = "GuiltyAtomeis - Extended SOUL Language Compiler & VM"
 license       = "MIT"
 srcDir        = "src"
-bin           = @["atmc", "atomeis_runtime"]
+bin           = @["atmc"]
 
 
 # Dependencies

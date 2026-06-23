@@ -44,6 +44,10 @@ type
     # ATB modules cache (opLoadAtb)
     modules*: seq[seq[uint8]]
     pythonParser*: bool
+    # FFI extern handler: proc(vm, runtimeEngine, externIndex)
+    externHandler*: proc(vm: var VM, runtimeEngine: var AutonomousMalbolge, idx: int) {.nimcall.}
+    # Heap bump allocation pointer
+    heapNextAddr*: int
 
 
 
@@ -106,12 +110,7 @@ proc readInt64(vm: var VM, code: seq[FheBlock], buildEngine: var AutonomousMalbo
     var bytes: array[8, uint8]
     for i in 0..7:
         if vm.buildSeed == 0:
-            if vm.pc >= vm.originalLen: vm.pc = 0
-            let pIdx = vm.pc div 16
-            vm.fetchPacket(code, buildEngine, pIdx)
-            let raw = vm.isolationBuffer[vm.pc mod 16]
-            bytes[i] = raw
-            vm.isolationBuffer[vm.pc mod 16] = opNoise.uint8
+            bytes[i] = if vm.pc < code.len: code[vm.pc].low.uint8 else: 0'u8
             vm.pc += 1
         else:
             vm.pc = (vm.x + vm.y * 1024 + vm.z * 1024 * 1024 + vm.w * 1024 * 1024 * 1024) mod vm.originalLen
@@ -129,12 +128,7 @@ proc readInt32(vm: var VM, code: seq[FheBlock], buildEngine: var AutonomousMalbo
     var bytes: array[4, uint8]
     if vm.buildSeed == 0:
         for i in 0..3:
-            if vm.pc >= vm.originalLen: vm.pc = 0
-            let pIdx = vm.pc div 16
-            vm.fetchPacket(code, buildEngine, pIdx)
-            let raw = vm.isolationBuffer[vm.pc mod 16]
-            bytes[i] = raw
-            vm.isolationBuffer[vm.pc mod 16] = opNoise.uint8
+            bytes[i] = if vm.pc < code.len: code[vm.pc].low.uint8 else: 0'u8
             vm.pc += 1
         return cast[int32](bytes)
     for i in 0..3:
@@ -169,6 +163,7 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
     let oramKey = uint64(buildSeed) xor 0x0B1B10C0'u64
     vm.oramMem = initOramMemory(1024, oramKey)
     vm.debugData = newSeq[int32](1024)
+    vm.heapNextAddr = 4096
 
     # buildEngine のレジスタ状態を compile時と合わせる
     buildEngine.setRegister(buildSeed)
@@ -184,32 +179,30 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
           vm.pc = (vm.x + vm.y * 1024 + vm.z * 1024 * 1024 + vm.w * 1024 * 1024 * 1024) mod vm.originalLen
           if vm.pc < 0: vm.pc = abs(vm.pc)
 
-        let pIdx = vm.pc div 16
-        if pIdx != vm.currentPacketIdx:
-            vm.fetchPacket(code, buildEngine, pIdx)
-            vm.currentPacketIdx = pIdx
+        if vm.buildSeed != 0:
+            let pIdx = vm.pc div 16
+            if pIdx != vm.currentPacketIdx:
+                vm.fetchPacket(code, buildEngine, pIdx)
+                vm.currentPacketIdx = pIdx
 
-        let instrPc = vm.pc
+        var instrPc = vm.pc
+        var instr: OpCode
         if vm.buildSeed == 0:
-            vm.pc = (vm.pc + 1) mod vm.originalLen
-        let localPc = instrPc mod 16
-
-        let instr = cast[OpCode](vm.isolationBuffer[localPc])
-
-        # Sin(罪)軸を真乱数で更新 (ドリフト) - 特権モードでは無効化
-        if not vm.privileged:
-            vm.sin = vm.sin + cast[float64](runtimeEngine.generateTrueSpice() and 0xFFFF) / 65535.0
-            vm.w = (vm.w + int(vm.sin)) mod 1024
-            if vm.w < 0: vm.w = abs(vm.w) mod 1024
-
-        vm.isolationBuffer[localPc] = opNoise.uint8
-
-        # Befunge 歩行
-        vm.x = (vm.x + vm.dx) mod 1024
-        vm.y = (vm.y + vm.dy) mod 1024
-        vm.z = (vm.z + vm.dz) mod 1024
-
-        buildEngine.evolveIsa(vm.isolationBuffer[localPc])
+            let b = if instrPc < code.len: code[instrPc].low.uint8 else: 0'u8
+            vm.pc = instrPc + 1
+            instr = cast[OpCode](b)
+        else:
+            let localPc = instrPc mod 16
+            instr = cast[OpCode](vm.isolationBuffer[localPc])
+            vm.isolationBuffer[localPc] = opNoise.uint8
+            if not vm.privileged:
+                vm.sin = vm.sin + cast[float64](runtimeEngine.generateTrueSpice() and 0xFFFF) / 65535.0
+                vm.w = (vm.w + int(vm.sin)) mod 1024
+                if vm.w < 0: vm.w = abs(vm.w) mod 1024
+            vm.x = (vm.x + vm.dx) mod 1024
+            vm.y = (vm.y + vm.dy) mod 1024
+            vm.z = (vm.z + vm.dz) mod 1024
+            buildEngine.evolveIsa(vm.isolationBuffer[localPc])
 
         case instr
         of opPush:
@@ -264,16 +257,20 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                     let ramBlk = vm.oramMem.oramRead(addrVal)
                     let val = runtimeEngine.stableDecrypt(ramBlk, addrVal.int)
                     vm.stack.add(runtimeEngine.stableEncrypt(val, vm.stack.len))
-        of opAdd, opSub, opMul, opDiv, opXor, opAnd, opOr, opShl, opShr, opEq, opNe, opLt, opGt, opLe, opGe:
+        of opAdd, opSub, opMul, opDiv, opMod, opXor, opAnd, opOr, opShl, opShr, opEq, opNe, opLt, opGt, opLe, opGe:
             if vm.stack.len >= 2:
-                let b = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
-                let a = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
+                let targetLen = vm.stack.len - 2
+                let bBlk = vm.stack.pop()
+                let b = runtimeEngine.stableDecrypt(bBlk, targetLen + 1)
+                let aBlk = vm.stack.pop()
+                let a = runtimeEngine.stableDecrypt(aBlk, targetLen)
                 var res: int32 = 0
                 case instr
                 of opAdd: res = a + b
                 of opSub: res = a - b
                 of opMul: res = a * b
                 of opDiv: res = if b != 0: a div b else: 0
+                of opMod: res = if b != 0: a mod b else: 0
                 of opXor: res = a xor b
                 of opAnd: res = a and b
                 of opOr:  res = a or b
@@ -289,8 +286,11 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 vm.stack.add(runtimeEngine.stableEncrypt(res, vm.stack.len))
         of opFAdd, opFSub, opFMul, opFDiv:
             if vm.stack.len >= 2:
-                let bBits = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
-                let aBits = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
+                let targetLen = vm.stack.len - 2
+                let bBlk = vm.stack.pop()
+                let bBits = runtimeEngine.stableDecrypt(bBlk, targetLen + 1)
+                let aBlk = vm.stack.pop()
+                let aBits = runtimeEngine.stableDecrypt(aBlk, targetLen)
                 let a = cast[float32](aBits)
                 let b = cast[float32](bBits)
                 var res: float32 = 0
@@ -304,10 +304,15 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 vm.stack.add(runtimeEngine.stableEncrypt(resBits, vm.stack.len))
         of opAdd64, opSub64, opMul64, opDiv64:
             if vm.stack.len >= 4:
-                let bHi = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
-                let bLo = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
-                let aHi = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
-                let aLo = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
+                let targetLen = vm.stack.len - 4
+                let bHiBlk = vm.stack.pop()
+                let bHi = runtimeEngine.stableDecrypt(bHiBlk, targetLen + 3)
+                let bLoBlk = vm.stack.pop()
+                let bLo = runtimeEngine.stableDecrypt(bLoBlk, targetLen + 2)
+                let aHiBlk = vm.stack.pop()
+                let aHi = runtimeEngine.stableDecrypt(aHiBlk, targetLen + 1)
+                let aLoBlk = vm.stack.pop()
+                let aLo = runtimeEngine.stableDecrypt(aLoBlk, targetLen)
                 let a = (int64(aHi) shl 32) or (int64(aLo) and 0xFFFFFFFF)
                 let b = (int64(bHi) shl 32) or (int64(bLo) and 0xFFFFFFFF)
                 var res: int64 = 0
@@ -327,20 +332,65 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 vm.stack.add(runtimeEngine.stableEncrypt(mapId.int32, vm.stack.len))
         of opMapSet:
             if vm.stack.len >= 3:
+                let targetLen = vm.stack.len - 3
                 let rawValBlk = vm.stack.pop()
-                let val = runtimeEngine.stableDecrypt(rawValBlk, vm.stack.len)
-                let key = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).uint64
-                let mapId = (runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).uint64) and 0x7FFFFFFF
+                let val = runtimeEngine.stableDecrypt(rawValBlk, targetLen + 2)
+                let keyBlk = vm.stack.pop()
+                let key = runtimeEngine.stableDecrypt(keyBlk, targetLen + 1).uint64
+                let mapIdBlk = vm.stack.pop()
+                let mapId = (runtimeEngine.stableDecrypt(mapIdBlk, targetLen).uint64) and 0x7FFFFFFF
                 if vm.heap.hasKey(mapId): 
                     vm.heap[mapId][key] = runtimeEngine.stableEncrypt(val, (mapId xor key).int)
         of opMapGet:
             if vm.stack.len >= 2:
-                let key = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).uint64
-                let mapId = (runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).uint64) and 0x7FFFFFFF
+                let targetLen = vm.stack.len - 2
+                let keyBlk = vm.stack.pop()
+                let key = runtimeEngine.stableDecrypt(keyBlk, targetLen + 1).uint64
+                let mapIdBlk = vm.stack.pop()
+                let mapId = (runtimeEngine.stableDecrypt(mapIdBlk, targetLen).uint64) and 0x7FFFFFFF
                 if vm.heap.hasKey(mapId): 
                     let heapBlk = vm.heap[mapId].getOrDefault(key, FheBlock(low:0, high:0))
                     let val = runtimeEngine.stableDecrypt(heapBlk, (mapId xor key).int)
                     vm.stack.add(runtimeEngine.stableEncrypt(val, vm.stack.len))
+                else:
+                    vm.stack.add(runtimeEngine.stableEncrypt(0, vm.stack.len))
+        of opStrEq:
+            if vm.stack.len >= 2:
+                let targetLen = vm.stack.len - 2
+                let bTagBlk = vm.stack.pop()
+                let bTag = runtimeEngine.stableDecrypt(bTagBlk, targetLen + 1)
+                let aTagBlk = vm.stack.pop()
+                let aTag = runtimeEngine.stableDecrypt(aTagBlk, targetLen)
+                var res: int32 = 0
+                if aTag >= STRING_TAG and aTag < STRING_TAG + vm.stringPool.len.int32 and
+                   bTag >= STRING_TAG and bTag < STRING_TAG + vm.stringPool.len.int32:
+                    let aStr = vm.stringPool[aTag - STRING_TAG]
+                    let bStr = vm.stringPool[bTag - STRING_TAG]
+                    res = if aStr == bStr: 1 else: 0
+                else:
+                    res = if aTag == bTag: 1 else: 0
+                vm.stack.add(runtimeEngine.stableEncrypt(res, vm.stack.len))
+        of opStrLen, opArrayLen:
+            if vm.stack.len >= 1:
+                let targetLen = vm.stack.len - 1
+                let arrBlk = vm.stack.pop()
+                let arrVal = runtimeEngine.stableDecrypt(arrBlk, targetLen)
+                if arrVal >= STRING_TAG and arrVal < STRING_TAG + vm.stringPool.len.int32:
+                    let s = vm.stringPool[arrVal - STRING_TAG]
+                    vm.stack.add(runtimeEngine.stableEncrypt(s.len.int32, vm.stack.len))
+                else:
+                    vm.stack.add(runtimeEngine.stableEncrypt(0, vm.stack.len))
+        of opStrGet, opArrayGet:
+            if vm.stack.len >= 2:
+                let targetLen = vm.stack.len - 2
+                let idxBlk = vm.stack.pop()
+                let idx = runtimeEngine.stableDecrypt(idxBlk, targetLen + 1).int
+                let arrBlk = vm.stack.pop()
+                let arrVal = runtimeEngine.stableDecrypt(arrBlk, targetLen)
+                if arrVal >= STRING_TAG and arrVal < STRING_TAG + vm.stringPool.len.int32:
+                    let s = vm.stringPool[arrVal - STRING_TAG]
+                    let ch = if idx >= 0 and idx < s.len: ord(s[idx]).int32 else: 0
+                    vm.stack.add(runtimeEngine.stableEncrypt(ch, vm.stack.len))
                 else:
                     vm.stack.add(runtimeEngine.stableEncrypt(0, vm.stack.len))
         of opPrint:
@@ -404,17 +454,22 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                             p.close()
         of opListAppend:
             if vm.stack.len >= 2:
+                let targetLen = vm.stack.len - 2
                 let valBlk = vm.stack.pop()
-                let val = runtimeEngine.stableDecrypt(valBlk, vm.stack.len)
-                let listId = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).uint64
+                let val = runtimeEngine.stableDecrypt(valBlk, targetLen + 1)
+                let listIdBlk = vm.stack.pop()
+                let listId = runtimeEngine.stableDecrypt(listIdBlk, targetLen).uint64
                 if not vm.heap.hasKey(listId):
                     vm.heap[listId] = initTable[uint64, FheBlock]()
                 let nextIdx = vm.heap[listId].len.uint64
                 vm.heap[listId][nextIdx] = runtimeEngine.stableEncrypt(val, (listId xor nextIdx).int)
         of opListGet:
             if vm.stack.len >= 2:
-                let idx = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).uint64
-                let listId = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).uint64
+                let targetLen = vm.stack.len - 2
+                let idxBlk = vm.stack.pop()
+                let idx = runtimeEngine.stableDecrypt(idxBlk, targetLen + 1).uint64
+                let listIdBlk = vm.stack.pop()
+                let listId = runtimeEngine.stableDecrypt(listIdBlk, targetLen).uint64
                 if vm.heap.hasKey(listId):
                     let heapBlk = vm.heap[listId].getOrDefault(idx, FheBlock(low:0, high:0))
                     let val = runtimeEngine.stableDecrypt(heapBlk, (listId xor idx).int)
@@ -423,8 +478,11 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                     vm.stack.add(runtimeEngine.stableEncrypt(0, vm.stack.len))
         of opStrCat:
             if vm.stack.len >= 2:
-                let bTag = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
-                let aTag = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
+                let targetLen = vm.stack.len - 2
+                let bTagBlk = vm.stack.pop()
+                let bTag = runtimeEngine.stableDecrypt(bTagBlk, targetLen + 1)
+                let aTagBlk = vm.stack.pop()
+                let aTag = runtimeEngine.stableDecrypt(aTagBlk, targetLen)
                 if aTag >= STRING_TAG and aTag < STRING_TAG + vm.stringPool.len.int32 and
                    bTag >= STRING_TAG and bTag < STRING_TAG + vm.stringPool.len.int32:
                     let aStr = vm.stringPool[aTag - STRING_TAG]
@@ -475,8 +533,11 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                         vm.stack.add(runtimeEngine.stableEncrypt(-1, vm.stack.len))
         of opWrite:
             if vm.stack.len >= 2:
-                let fid = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).int
-                let val = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
+                let targetLen = vm.stack.len - 2
+                let fidBlk = vm.stack.pop()
+                let fid = runtimeEngine.stableDecrypt(fidBlk, targetLen + 1).int
+                let valBlk = vm.stack.pop()
+                let val = runtimeEngine.stableDecrypt(valBlk, targetLen)
                 if vm.fileHandles.hasKey(fid):
                     let f = vm.fileHandles[fid]
                     f.write(char(val and 0xFF))
@@ -488,8 +549,11 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                     vm.fileHandles.del(fid)
         of opCopyAll:
             if vm.stack.len >= 2:
-                let dstFid = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).int
-                let srcFid = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).int
+                let targetLen = vm.stack.len - 2
+                let dstFidBlk = vm.stack.pop()
+                let dstFid = runtimeEngine.stableDecrypt(dstFidBlk, targetLen + 1).int
+                let srcFidBlk = vm.stack.pop()
+                let srcFid = runtimeEngine.stableDecrypt(srcFidBlk, targetLen).int
                 if vm.fileHandles.hasKey(srcFid) and vm.fileHandles.hasKey(dstFid):
                     let src = vm.fileHandles[srcFid]
                     let dst = vm.fileHandles[dstFid]
@@ -505,8 +569,11 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 vm.stack.add(runtimeEngine.stableEncrypt(val, vm.stack.len))
         of opWriteBlock:
             if vm.stack.len >= 2:
-                let fid = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len).int
-                let tag = runtimeEngine.stableDecrypt(vm.stack.pop(), vm.stack.len)
+                let targetLen = vm.stack.len - 2
+                let fidBlk = vm.stack.pop()
+                let fid = runtimeEngine.stableDecrypt(fidBlk, targetLen + 1).int
+                let tagBlk = vm.stack.pop()
+                let tag = runtimeEngine.stableDecrypt(tagBlk, targetLen)
                 if tag >= STRING_TAG and tag < STRING_TAG + vm.stringPool.len.int32:
                     let s = vm.stringPool[tag - STRING_TAG]
                     if vm.fileHandles.hasKey(fid):
@@ -536,6 +603,10 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 except:
                     discard
                 vm.stack.add(runtimeEngine.stableEncrypt(0, vm.stack.len))
+        of opFFICall:
+            let externIdx = vm.readInt32(code, buildEngine).int
+            if vm.externHandler != nil:
+                vm.externHandler(vm, runtimeEngine, externIdx)
         of opCall:
             let targetAddr = vm.readInt32(code, buildEngine).int
             if vm.buildSeed != 0:
@@ -551,7 +622,7 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                 vm.w = (targetAddr div (1024 * 1024 * 1024)) mod 1024
                 vm.sin = 0.0
             continue
-        of opRet:
+        of opRet, opReturn:
             if vm.callStack.len > 0:
                 let retAddr = vm.callStack.pop()
                 if vm.buildSeed != 0:
@@ -560,6 +631,58 @@ proc run*(vm: var VM, code: seq[FheBlock], runtimeEngine: var AutonomousMalbolge
                     vm.sin = vm.savedSin
                 vm.pc = retAddr
                 continue
+        of opPushBool:
+            let b = vm.readInt32(code, buildEngine)
+            vm.stack.add(runtimeEngine.stableEncrypt(b, vm.stack.len))
+        of opAlloc:
+            if vm.stack.len >= 1:
+                let sizeBlk = vm.stack.pop()
+                let byteSize = runtimeEngine.stableDecrypt(sizeBlk, vm.stack.len).int
+                let slotCount = max(1, byteSize div 4 + (if byteSize mod 4 != 0: 1 else: 0))
+                let heapAddr = vm.heapNextAddr
+                vm.heapNextAddr += slotCount
+                if vm.heapNextAddr >= vm.debugData.len:
+                    vm.debugData.setLen(vm.heapNextAddr + 1024)
+                vm.stack.add(runtimeEngine.stableEncrypt(heapAddr.int32, vm.stack.len))
+        of opFree:
+            if vm.stack.len >= 1:
+                discard vm.stack.pop()
+        of opPtrRead:
+            if vm.stack.len >= 2:
+                let targetLen = vm.stack.len - 2
+                let offsetBlk = vm.stack.pop()
+                let byteOffset = runtimeEngine.stableDecrypt(offsetBlk, targetLen + 1).int
+                let baseBlk = vm.stack.pop()
+                let baseSlot = runtimeEngine.stableDecrypt(baseBlk, targetLen).int
+                let slotIdx = baseSlot + byteOffset div 4
+                if slotIdx >= 0:
+                    if vm.buildSeed == 0:
+                        let raw = if slotIdx < vm.debugData.len: vm.debugData[slotIdx] else: 0
+                        vm.stack.add(runtimeEngine.stableEncrypt(raw, vm.stack.len))
+                    else:
+                        let ramBlk = vm.oramMem.oramRead(uint64(slotIdx))
+                        let v = runtimeEngine.stableDecrypt(ramBlk, slotIdx)
+                        vm.stack.add(runtimeEngine.stableEncrypt(v, vm.stack.len))
+        of opPtrWrite:
+            if vm.stack.len >= 3:
+                let targetLen = vm.stack.len - 3
+                let valBlk = vm.stack.pop()
+                let val = runtimeEngine.stableDecrypt(valBlk, targetLen + 2)
+                let offsetBlk = vm.stack.pop()
+                let byteOffset = runtimeEngine.stableDecrypt(offsetBlk, targetLen + 1).int
+                let baseBlk = vm.stack.pop()
+                let baseSlot = runtimeEngine.stableDecrypt(baseBlk, targetLen).int
+                let slotIdx = baseSlot + byteOffset div 4
+                if slotIdx >= 0:
+                    if vm.buildSeed == 0:
+                        if slotIdx >= vm.debugData.len:
+                            vm.debugData.setLen(slotIdx + 1024)
+                        vm.debugData[slotIdx] = val
+                    else:
+                        let reencBlk = runtimeEngine.stableEncrypt(val, slotIdx)
+                        vm.oramMem.oramWrite(uint64(slotIdx), reencBlk)
+        of opAddr:
+            discard
         of opExit:
             return
         else: discard

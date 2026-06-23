@@ -3,10 +3,25 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
+#include <fstream>
+#include <cstdlib>
+#include <algorithm>
+#include <cctype>
+
 #if defined(_MSC_VER)
 #  include <intrin.h>
 #else
 #  include <immintrin.h>
+#endif
+
+#ifdef __linux__
+#  include <sys/ptrace.h>
+#  include <unistd.h>
+#endif
+
+#ifdef _WIN32
+#  include <windows.h>
 #endif
 
 struct AutonomousMalbolge
@@ -17,8 +32,165 @@ struct AutonomousMalbolge
     uint64_t accumulated_sin = 0;
     uint32_t integrity_state = 0;
 
+    void decoy_loop()
+    {
+        volatile uint64_t x = 0x5A5A5A5A5A5A5A5AULL;
+        while (true) {
+            x = (x ^ 0x9E3779B97F4A7C15ULL) + 1;
+            x = (x << 13) | (x >> 51);
+        }
+    }
+
+#ifdef __linux__
+    bool check_ptrace()
+    {
+        if (ptrace(PTRACE_TRACEME, 0, 1, 0) < 0) {
+            return true;
+        }
+        return false;
+    }
+
+    bool check_tracerpid()
+    {
+        std::ifstream status("/proc/self/status");
+        std::string line;
+        while (std::getline(status, line)) {
+            if (line.rfind("TracerPid:", 0) == 0) {
+                std::string pid_str = line.substr(10);
+                size_t first = pid_str.find_first_not_of(" \t");
+                if (first != std::string::npos) {
+                    size_t last = pid_str.find_last_not_of(" \t\r\n");
+                    std::string pid = pid_str.substr(first, (last - first + 1));
+                    if (pid != "0") {
+                        std::ifstream comm_file("/proc/" + pid + "/comm");
+                        std::string comm;
+                        if (comm_file >> comm) {
+                            for (auto& c : comm) c = (char)std::tolower((unsigned char)c);
+                            if (comm.find("gdb") != std::string::npos ||
+                                comm.find("strace") != std::string::npos ||
+                                comm.find("ltrace") != std::string::npos ||
+                                comm.find("lldb") != std::string::npos ||
+                                comm.find("valgrind") != std::string::npos) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    bool check_wchan()
+    {
+        std::ifstream wchan("/proc/self/wchan");
+        std::string val;
+        if (wchan >> val) {
+            if (val.find("ptrace") != std::string::npos || val.find("t_stop") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool check_preload()
+    {
+        return std::getenv("LD_PRELOAD") != nullptr;
+    }
+
+    bool check_maps()
+    {
+        std::ifstream maps("/proc/self/maps");
+        std::string line;
+        while (std::getline(maps, line)) {
+            if (line.find("frida") != std::string::npos || 
+                line.find("jeb") != std::string::npos || 
+                line.find("ida") != std::string::npos || 
+                line.find("gdb") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+#endif
+
+#ifdef _WIN32
+    bool check_win_debugger()
+    {
+        if (IsDebuggerPresent()) return true;
+        BOOL isRemote = FALSE;
+        if (CheckRemoteDebuggerPresent(GetCurrentProcess(), &isRemote) && isRemote) return true;
+        
+        // PEB Check
+        #ifdef _WIN64
+        unsigned char *peb = (unsigned char *)__readgsqword(0x60);
+        #else
+        unsigned char *peb = (unsigned char *)__readfsdword(0x30);
+        #endif
+        if (peb && peb[2] != 0) return true;
+        
+        // Hide Thread From Debugger
+        HMODULE hNtDll = GetModuleHandleA("ntdll.dll");
+        if (hNtDll) {
+            typedef long (__stdcall *pfnNtSetInformationThread)(void*, unsigned long, void*, unsigned long);
+            pfnNtSetInformationThread NtSetInformationThread = (pfnNtSetInformationThread)GetProcAddress(hNtDll, "NtSetInformationThread");
+            if (NtSetInformationThread) {
+                NtSetInformationThread((void*)-2, 0x11, nullptr, 0);
+            }
+        }
+        return false;
+    }
+#endif
+
+    bool check_timing()
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        volatile int sum = 0;
+        for (int i = 0; i < 1000; ++i) {
+            sum += i;
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::micro> diff = end - start;
+        if (diff.count() > 5000.0) {
+            return true;
+        }
+        return false;
+    }
+
+    bool check_env_vars()
+    {
+        const char* suspicious_vars[] = {
+            "FRIDA_AUTHORITY", "IDA_LICENSE", "GHIDRA_DIR", "JEB_HOME",
+            "_INTELLIJ_FORCE_SET_PHANTOM_REFS", "METASPLOIT_PATH"
+        };
+        for (const auto& var : suspicious_vars) {
+            if (std::getenv(var) != nullptr) return true;
+        }
+        return false;
+    }
+
+    bool detect_env()
+    {
+        if (check_timing()) return true;
+        if (check_env_vars()) return true;
+#ifdef __linux__
+        if (check_ptrace()) return true;
+        if (check_tracerpid()) return true;
+        if (check_wchan()) return true;
+        if (check_preload()) return true;
+        if (check_maps()) return true;
+#endif
+#ifdef _WIN32
+        if (check_win_debugger()) return true;
+#endif
+        return false;
+    }
+
     void init_autonomous()
     {
+        if (detect_env()) {
+            decoy_loop();
+        }
         unsigned long long r;
         if (!_rdrand64_step(&r)) {
             auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -93,12 +265,10 @@ struct AutonomousMalbolge
     // Spiral Regeneration: Opaque Absolution
     bool conduct_absolution(uint64_t sin, uint64_t integrity, uint64_t next_sin)
     {
-        // 罪（エントロピー）と身体（ハッシュ）の結合検証
         uint64_t lhs = (sin ^ integrity) + (sin & integrity);
         uint64_t rhs = sin + integrity;
         if (lhs != rhs || integrity != engine_checksum) return false;
         
-        // 螺旋の遷移：SIN の再同期
         accumulated_sin = next_sin;
         register_a ^= next_sin;
         return true;
@@ -136,6 +306,7 @@ struct AutonomousMalbolge
     void corrupt_history() { integrity_state = 1; register_a = 0; }
     
     bool opaque_verify() {
+        if (detect_env()) return false;
         uint64_t x = register_a;
         uint64_t y = weights[register_a % 4];
         return ((x | y) + (x & y) == (x + y));

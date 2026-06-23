@@ -1,0 +1,32 @@
+# challenge.atx — Flag verification reversing challenge
+
+fn str_equal(a: string, b: string): bool:
+    let len_a = len(a)
+    let len_b = len(b)
+    if len_a != len_b:
+        return false
+    var i = 0
+    while i < len_a:
+        if a[i] != b[i]:
+            return false
+        i = i + 1
+    return true
+
+fn main():
+    let flag = getarg(0)
+    
+    # Check if a flag was passed (getarg(0) returns 0 if not present)
+    if flag == 0:
+        reveal("Usage: challenge <flag>\n")
+        exit(1)
+        
+    let secret = "FLAG_atx_reversing_24a87c"
+    
+    if str_equal(flag, secret):
+        reveal("CORRECT FLAG! Welcome to GuiltyAtomeis V11 challenge.\n")
+        exit(0)
+    else:
+        reveal("WRONG FLAG! Try harder.\n")
+        exit(1)
+
+main()
