@@ -1,4 +1,4 @@
-# GuiltyAtomeis V10 — テスト・ビルドガイド
+# GuiltyAtomeis V11 — テスト・ビルドガイド
 
 ## 1. コンパイラのビルド
 
@@ -40,7 +40,7 @@ atmc --debug source.atx output
 chmod +x output
 ./output
 
-# リリースモード（暗号化＋完全性保護有効）
+# リリースモード（暗号化＋完全性保護＋アンチデバッグ＋文字列プール隠蔽有効）
 atmc source.atx output
 chmod +x output
 ./output
@@ -48,6 +48,13 @@ chmod +x output
 # ATB中間コード出力
 atmc --atb source.atx output.atb
 ```
+
+### Windows (Mingw) クロスコンパイル
+Linux上でWindows向けにコンパイルする場合：
+```bash
+atmc source.atx output.exe
+```
+※自動的にMingwでクロスコンパイルされ、静的リンクされたスタンドアロンな Windows バイナリ（XOR文字列プールおよび環境検知保護付き）が生成されます。
 
 ---
 
@@ -202,12 +209,53 @@ atmc script.py output
 
 ---
 
-## 6. デバッグモードとリリースモードの違い
+## 6. セキュリティ保護検証テスト（V11追加）
+
+リリースビルドされた実行ファイルに対して以下のコマンドを実行し、保護機構が正常に動作するか確認します。
+
+### GDBアタッチのテスト
+```bash
+gdb -batch -ex "run" ./output
+# 期待動作: gdbを検知し、ハングアップ（CPU 100%の無限ループ）します。
+```
+
+### Straceのテスト
+```bash
+strace ./output
+# 期待動作: straceを検知し、ハングアップ（CPU 100%の無限ループ）します。
+```
+
+### 静的バイナリ改ざん（アンチパッチ）のテスト
+```bash
+# Pythonスクリプト等でバイナリの任意の1バイトを書き換え
+python3 -c "
+data = bytearray(open('output', 'rb').read())
+data[100] ^= 0x42
+open('output_corrupted', 'wb').write(data)
+" && chmod +x output_corrupted
+
+# 実行
+./output_corrupted
+# 期待動作: 署名フッター（FNV-1aチェックサム）の検証に失敗し、即座にハングアップします。
+```
+
+### strings抽出テスト
+```bash
+strings ./output | grep -E "(FLAG|CORRECT|WRONG)"
+# 期待動作: 文字列プールがXOR暗号化されているため、フラグ文字列や機密メッセージが露出しないことを確認します。
+```
+
+---
+
+## 7. デバッグモードとリリースモードの違い
 
 | 項目 | `--debug`（開発） | 通常（リリース） |
 |------|-----------------|----------------|
 | バイトコード暗号化 | 平文 | FHE暗号化 |
 | Thue ISAシャッフル | なし | あり |
-| ORAM | なし（直接メモリアクセス） | あり |
+| ORAM | なし | あり |
+| 文字列プール難読化 | なし（平文露出） | **あり（XOR暗号化）** |
+| 自己署名 & 整合性検証 | なし | **あり（FNV-1a & Magic）** |
+| 動的環境・デバッガ検出 | なし | **あり（7系統 + timing ほか）** |
+| 検出時挙動 | なし | **あり（CPU100%デコイループ）** |
 | コンパイル速度 | 速い | やや遅い |
-| 完全性チェック | 一部無効 | 完全有効 |

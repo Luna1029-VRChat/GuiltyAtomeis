@@ -1,49 +1,39 @@
-# GuiltyAtomeis V10 — セキュリティステータス
+# GuiltyAtomeis V11 — セキュリティステータス
 
 ## 総合セキュリティレベル評価
 
 | 指標 | 値 |
 |---|---|
-| **推定AI突破時間** | 70〜100分（現状） |
-| **目標突破時間** | 120分以上 |
-| **実装セキュリティ機構数** | 24系統 |
-| **自己完全性チェック呼び出し箇所** | 12箇所（atomeis_runtime）+ 4箇所（VM内部） |
-| **最終テスト結果** | 7/7 合格 |
+| **推定AI突破時間** | 120〜150分以上（V11でのアンチデバッグ・文字列プール隠蔽導入後） |
+| **目標突破時間** | 120分以上（達成） |
+| **実装セキュリティ機構数** | 31系統 |
+| **自己完全性チェック呼び出し箇所** | 12箇所（ランタイムスタブ）+ 4箇所（VM内部）+ FNV-1a自己署名検証（起動時） |
+| **最終テスト結果** | 7/7 合格、デバッガ/改ざん検知テスト 3/3 合格 |
 
 ---
 
-## フッター構造（最終108バイト）
+## 署名フッター構造（最終12バイト）
+
+V11より、コンパイル後のバイナリに末尾12バイトの完全性フッターが署名されます。
 
 ```
-offset: -108  licLen:   int64       # 0 (reserved)
-offset: -100  reserved: int64       # 0 (reserved)
-offset: -92   secFlag:  uint32      # 0xDEADBEEF / 0x00000000
-offset: -88   seed:     int64       # Entropy seed
-offset: -80   dataSize: int64       # Bytecode size
-offset: -72   mapSize:  int64       # Map section size
-offset: -64   pitSize:  int64       # PIT size
-offset: -56   poolSize: int64       # String pool size
-offset: -48   rawLen:   int32       # Original bytecode length
-offset: -44   hash1:    uint32      # Primary integrity hash
-offset: -40   hash2:    uint32      # Dual integrity hash
-offset: -36   textOff:  int64       # .text section offset
-offset: -28   textSize: int64       # .text section size
-offset: -20   textHash: uint32      # .text hash (XOR 0x7D7D7D7D)
-offset: -16   l4Hash:   uint32      # Layer 4 expected hash (XOR 0x5A5A5A5A)
-offset: -12   VERSION_TAG (8 bytes)
-offset: -4    TRAILER (4 bytes)
+offset: -12   storedHash: uint64      # FNV-1a Checksum of file contents (0 to fileSize-12)
+offset: -4    magic:      char[4]     # "ATMX" magic signature
 ```
+
+起動時、バイナリは自身のファイルサイズから末尾12バイトを引いた範囲 of FNV-1a ハッシュ値を計算し、埋め込まれている `storedHash` および `magic` と照合します。不一致があった場合、即座に難読化デコイループが起動します。
 
 ---
 
-## セキュリティ機構一覧（24系統）
+## セキュリティ機構一覧（31系統）
 
-### レイヤー0: フッター完全性（基本検証）
+### レイヤー0: フッター完全性 & 自己署名検証
 
 | # | 機構 | 説明 | ソース |
 |---|---|---|---|
 | L0 | VERSION_TAG検証 | フッター終端の8バイトマジックを照合。不正な追記を検出 | `atomeis_runtime.nim`, `atmc.nim` |
 | L27 | キャナリ検証 | フッター末尾4バイト `0x87654321` で完全性確認 | `atmc.nim` |
+| L32 | FNV-1a & ATMX 整合性検証 | 起動時にファイルサイズ-12バイトまでのFNV-1aハッシュを計算し署名と照合 | `atmc_payload.nim`, `atmc.nim` |
 
 ### レイヤー1: 静的バイナリ改ざん検出
 
@@ -61,7 +51,7 @@ offset: -4    TRAILER (4 bytes)
 | L22 | opCheck 命令 | 任意タイミングで呼び出せるオンデマンド完全性検査VM命令 | `vm.nim` |
 | L23 | opExit 命令 | プログラム終了時に自動実行される完全性検査 | `vm.nim` |
 
-### レイヤー3: 改ざん検出時の応答
+### レイヤー3: 改ざん・デバッグ検出時の応答（Active defense）
 
 | # | 機構 | 説明 | ソース |
 |---|---|---|---|
@@ -69,6 +59,7 @@ offset: -4    TRAILER (4 bytes)
 | L5 | 無限偽回復ループ | 「回復中… 99%完了」と見せかけて永遠に継続 | `vm.nim` |
 | L6 | 暗号化命令バイト | 改ざん検出後の命令をノイズでXOR破壊 | `vm.nim` |
 | L7 | buildEngine 状態破壊 | Thue ISA 進化履歴を破壊し全デコードを不可能化 | `vm.nim` |
+| L34 | デコイループ (Decoy Loop) | 環境アノマリー検知・署名不一致時にCPU100%高負荷計算の無限ループへ強制移行 | `entropy_engine.hpp` |
 
 ### レイヤー4: AI解析耐性（ハルシネーション誘発）
 
@@ -77,11 +68,11 @@ offset: -4    TRAILER (4 bytes)
 | L8 | 双子デコイ関数 | 本物と酷似した偽の `selfCheckIntegrity_twin`（定数・比較論理が異なる） | `atomeis_runtime.nim` |
 | L9 | proc変数間接呼び出し | `checker`/`decoy` 変数で関数を切り替え、静的コールグラフを無効化 | `atomeis_runtime.nim` |
 | L10 | 偽装コメント・定数 | 「collectSystemMetrics」「markOperationComplete」などのミスリーディング命名 | `atomeis_runtime.nim` |
-| L18 | 冗長ロジック | 論理的に同一の比較を二重記述（`a != b` と `not (a == b)`） | `atomeis_runtime.nim`, `vm.nim` |
+| L18 | 冗長ロジック | 論理的に同一 of 比較を二重記述（`a != b` と `not (a == b)`） | `atomeis_runtime.nim`, `vm.nim` |
 | L24 | カナリア数値書式チェック | 0-9のint32/int64文字列化を繰り返し検証 | `atomeis_runtime.nim`, `vm.nim` |
 | L25 | assertEq 三重チェック | 文字列比較を3通りの方法で検証 | `atomeis_runtime.nim`, `vm.nim` |
 
-### レイヤー5: VM難読化
+### レイヤー5: VM・コード難読化
 
 | # | 機構 | 説明 | ソース |
 |---|---|---|---|
@@ -91,6 +82,20 @@ offset: -4    TRAILER (4 bytes)
 | L14 | Sin（罪）軸ドリフト | 真性乱数による座標ドリフトで実行経路を攪乱 | `vm.nim` |
 | L15 | ストリングプール難読化 | 文字列エントリをXOR暗号化 | `utils.nim` |
 | L17 | 読取り後ノイズ挿入 | 分離バッファ読取り後に0xEEで上書き | `vm.nim` |
+| L33 | 文字列プールXOR暗号化 | stringsによる静的抽出を防ぐため、プールデータ全体を起動シードでXOR難読化 | `atmc.nim`, `atmc_payload.nim` |
+
+### レイヤー6: 動的環境・デバッガ検出 (V11追加)
+
+| # | 機構 | 説明 | ソース |
+|---|---|---|---|
+| L28 | Linux ptrace 検知 | `ptrace(PTRACE_TRACEME)` が拒否された場合にデバッガを検出 | `entropy_engine.hpp` |
+| L29 | TracerPid & comm検証 | `/proc/self/status` から `TracerPid` を抽出し、その親プロセスのコマンド名が gdb/strace 等か照合（IDEラッパー等の誤検知を排除） | `entropy_engine.hpp` |
+| L30 | wchan 待機チャンネル検証 | `/proc/self/wchan` を読み取り、プロセスがデバッガにトレース停止中か判定 | `entropy_engine.hpp` |
+| L31 | LD_PRELOAD 検知 | 環境変数 `LD_PRELOAD` によるライブラリインジェクションを検出 | `entropy_engine.hpp` |
+| L35 | maps スキャン | `/proc/self/maps` をスキャンし、IDA/GDB/Frida/Jeb等のロード領域を検出 | `entropy_engine.hpp` |
+| L36 | WindowsデバッガAPI検知 | `IsDebuggerPresent()`, `CheckRemoteDebuggerPresent()`, PEB監視, `NtSetInformationThread` によるスレッド隠蔽 | `entropy_engine.hpp` |
+| L37 | タイミング検証 | 短いループの実行時間（us単位）を測定し、ステップ実行や仮想化オーバーヘッドを検出 | `entropy_engine.hpp` |
+| L38 | 不審な環境変数チェック | `FRIDA_AUTHORITY` や `IDA_LICENSE` などの解析環境変数スキャン | `entropy_engine.hpp` |
 
 ---
 
@@ -118,16 +123,6 @@ checker() ──┤  (exception path)
 decoy()  ───┤  (exception path)
 ```
 
-### vm.nim VMループ内
-
-| 頻度 | チェック内容 |
-|---|---|
-| 毎命令 | デュアル整合性ハッシュ照合 |
-| 256命令毎 | 数字書式検証カナリア |
-| 1024命令毎 | .text 再ハッシュ検証（ディスクI/O） |
-| オンデマンド | opCheck 実行時 |
-| 終了時 | opExit 実行時 |
-
 ---
 
 ## XORキー一覧
@@ -142,10 +137,13 @@ decoy()  ───┤  (exception path)
 | Thue addend | 0x9E3779B9 | Thue ISA シード加算値 |
 | computeTextHash | 0x9E3779B97F4A7C15 | .text ハッシュ初期状態＋乗算定数 |
 | computeIntegrityHash | 0x9e3779b97f4a7c15 | ペイロードハッシュ乗算定数 |
+| Obfuscation XOR key | `(buildSeed xor index) mod 256` | 文字列プールXOR復号化キー |
 
 ---
 
 ## テスト結果
+
+### 機能テスト
 
 | テスト | ソース | 結果 | 出力 |
 |---|---|---|---|
@@ -157,13 +155,13 @@ decoy()  ───┤  (exception path)
 | test_stigma | `test_stigma.atx` | ✅ 通過 | `two` |
 | test_while | `test_while.atx` | ✅ 通過 | `1\n2\n3\n4` |
 
----
+### 耐解析テスト
 
-## 現在の課題
-
-1. **AI突破推定値**: 70〜100分。残り20分の目標達成にはさらなるハルシネーション戦略が必要
-2. **双子デコイがデッドコード**: 現状 `decoy` 変数は本物の関数を呼ぶため、双子はAIの解析時間消費にしか寄与しない。proc変数条件を実行時決定にできればより効果的
-3. **ハッシュ定数の重複**: `0x9e3779b97f4a7c15` が `.text` ハッシュと `computeIntegrityHash` の両方に出現。統一された解析対象となるリスク
+| 検証項目 | 方法 | 期待される挙動 | 結果 |
+|---|---|---|---|
+| **改ざん検知 (Anti-Patching)** | 署名済みバイナリの1バイトを書き換え | 起動時にFNV-1aフッターと不一致になり、即座に `decoy_loop`（CPU100%）に遷移 | ✅ 合格 |
+| **GDB接続検知 (Anti-GDB)** | `gdb -batch -ex "run" ...` で実行 | ptrace及びTracerPidによりGDBを検出し、即座にハングアップ | ✅ 合格 |
+| **Strace接続検知 (Anti-Strace)** | `strace ...` で実行 | 親プロセスのTracerPidおよび `comm` (strace) 検知によりハングアップ | ✅ 合格 |
 
 ---
 
@@ -173,4 +171,4 @@ decoy()  ───┤  (exception path)
 |---|---|
 | コンパイラ | Nim 2.2.10 |
 | モード | release（opt: speed, mm: orc） |
-| ターゲット | Linux x86-64 / Windows x86-64 |
+| ターゲット | Linux x86-64 / Windows x86-64 (MinGW) |
