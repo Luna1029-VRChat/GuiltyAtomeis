@@ -175,11 +175,22 @@ proc buildSingleBinary(opts: CompileOptions, bytecode: seq[uint8],
   payloadFile.writeLine("  buildSeed: int64 = " & $effectiveSeed)
   payloadFile.writeLine("  secFlag: uint32 = 0x" & toHex(secFlag) & "'u32")
 
-  payloadFile.writeLine("  poolData = @[")
-  for i, s in pool:
-    var escaped = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
-    payloadFile.writeLine("    \"" & escaped & "\",")
-  payloadFile.writeLine("  ]")
+  if withSecurity:
+    payloadFile.writeLine("  poolDataObf = @[")
+    for i, s in pool:
+      payloadFile.write("    @[")
+      for j in 0 ..< s.len:
+        let key = uint8((effectiveSeed xor j) and 0xFF)
+        let obfChar = uint8(ord(s[j])) xor key
+        payloadFile.write("0x" & toHex(obfChar) & ".uint8, ")
+      payloadFile.writeLine("],")
+    payloadFile.writeLine("  ]")
+  else:
+    payloadFile.writeLine("  poolDataNormal = @[")
+    for i, s in pool:
+      var escaped = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+      payloadFile.writeLine("    \"" & escaped & "\",")
+    payloadFile.writeLine("  ]")
 
   payloadFile.writeLine("")
   payloadFile.writeLine("  bytecodeData = @[")
@@ -219,6 +230,16 @@ proc buildSingleBinary(opts: CompileOptions, bytecode: seq[uint8],
     payloadFile.writeLine("")
 
   payloadFile.writeLine("proc main() =")
+  payloadFile.writeLine("  var poolData: seq[string] = @[]")
+  if withSecurity:
+    payloadFile.writeLine("  for i in 0 ..< poolDataObf.len:")
+    payloadFile.writeLine("    var s = \"\"")
+    payloadFile.writeLine("    for j in 0 ..< poolDataObf[i].len:")
+    payloadFile.writeLine("      let key = uint8((buildSeed xor j) and 0xFF)")
+    payloadFile.writeLine("      s.add(char(poolDataObf[i][j] xor key))")
+    payloadFile.writeLine("    poolData.add(s)")
+  else:
+    payloadFile.writeLine("  poolData = poolDataNormal")
   payloadFile.writeLine("  var code: seq[FheBlock] = @[]")
   if withSecurity:
     payloadFile.writeLine("  var i = 0")
