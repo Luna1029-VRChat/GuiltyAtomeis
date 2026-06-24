@@ -1,4 +1,4 @@
-# GuiltyAtomeis V11 — Open Source Edition
+# GuiltyAtomeis V11
 
 **GuiltyAtomeis** はスタックベースの4次元迷路VM上で動作する暗号化バイトコードにコンパイルする実験的なプログラミング言語処理系です。  
 高度な難読化と耐解析（アンチデバッグ・改ざん検出・難読化）を中心とした軽量セキュリティモデルを採用しています。
